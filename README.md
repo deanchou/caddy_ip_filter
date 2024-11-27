@@ -1,6 +1,17 @@
 # ip filter module for caddy
 
-## List format
+This module implements request IP filter
+
+## Features
+
+- Support IPv4
+- Support IPv6
+- Support single IP address. Like 192.168.0.1
+- Support IP address range. Like 192.168.0.0/32
+- Support `X-Forwarded-For`
+- support `X-Real-IP`
+
+## Format
 
 ```
 1.1.1.1
