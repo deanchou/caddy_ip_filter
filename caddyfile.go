@@ -89,10 +89,7 @@ func (ipf *IPFilter) Validate() error {
 func (ipf IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	next caddyhttp.Handler) error {
 	// 获取客户端IP
-	clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return err
-	}
+	clientIP := getRealIP(r)
 
 	ipf.logger.Info("Client IP", zap.String("ip", clientIP))
 
@@ -222,6 +219,39 @@ func (ipf *IPFilter) updateLists() error {
 	return nil
 }
 
+// getRealIP 获取真实IP地址
+func getRealIP(r *http.Request) string {
+	// 检查 X-Forwarded-For 头
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// X-Forwarded-For 可以包含多个 IP 地址，逗号分隔
+		ips := strings.Split(xff, ",")
+		if len(ips) > 0 {
+			return strings.TrimSpace(ips[0])
+		}
+	}
+
+	// 检查 X-Real-IP 头
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+
+	// 默认返回 RemoteAddr
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
+}
+
+// isURL 检查字符串是否为URL
+func isURL(str string) bool {
+	// 定义一个简单的正则表达式来匹配 URL
+	// 这个正则表达式并不是非常严格，可以根据需要进行调整
+	regex := `^(http|https)://[^\s/$.?#].[^\s]*$`
+	re := regexp.MustCompile(regex)
+	return re.MatchString(str)
+}
+
 // isIPInList 检查IP是否在列表中
 func isIPInList(ip net.IP, list []string) bool {
 	for _, entry := range list {
@@ -244,15 +274,6 @@ func isIPInList(ip net.IP, list []string) bool {
 		}
 	}
 	return false
-}
-
-// isURL 检查字符串是否为URL
-func isURL(str string) bool {
-	// 定义一个简单的正则表达式来匹配 URL
-	// 这个正则表达式并不是非常严格，可以根据需要进行调整
-	regex := `^(http|https)://[^\s/$.?#].[^\s]*$`
-	re := regexp.MustCompile(regex)
-	return re.MatchString(str)
 }
 
 // parseCaddyfile 解析 Caddyfile
