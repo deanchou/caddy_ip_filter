@@ -13,20 +13,23 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 )
 
 // 保证 IPFilter 实现接口
 var (
-	_ caddy.Provisioner     = (*IPFilter)(nil)
-	_ caddy.Validator       = (*IPFilter)(nil)
-	_ caddyfile.Unmarshaler = (*IPFilter)(nil)
+	_ caddy.Provisioner           = (*IPFilter)(nil)
+	_ caddy.Validator             = (*IPFilter)(nil)
+	_ caddyhttp.MiddlewareHandler = (*IPFilter)(nil)
+	_ caddyfile.Unmarshaler       = (*IPFilter)(nil)
 )
 
 // init 函数用于注册 Caddy 插件
 func init() {
 	caddy.RegisterModule(IPFilter{})
+	httpcaddyfile.RegisterHandlerDirective("ip_filter", parseCaddyfile)
 }
 
 type IPFilter struct {
@@ -42,32 +45,32 @@ type IPFilter struct {
 // CaddyModule返回Caddy模块的信息
 func (IPFilter) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers.ipfilter",
+		ID:  "http.handlers.ip_filter",
 		New: func() caddy.Module { return new(IPFilter) },
 	}
 }
 
 // Provision实现了caddy.Provisioner
-func (h *IPFilter) Provision(ctx caddy.Context) error {
-	h.logger = ctx.Logger(h) // 获取日志对象
+func (ipf *IPFilter) Provision(ctx caddy.Context) error {
+	ipf.logger = ctx.Logger(ipf) // 获取日志对象
 
 	// 如果未设置更新间隔，则默认为1小时
-	if h.Interval == 0 {
-		h.Interval = caddy.Duration(time.Hour)
+	if ipf.Interval == 0 {
+		ipf.Interval = caddy.Duration(time.Hour)
 	}
 
 	// 更新列表
-	if err := h.updateLists(); err != nil {
+	if err := ipf.updateLists(); err != nil {
 		return fmt.Errorf("updating IP lists: %v", err)
 	}
 
 	// 启动定时器，定时更新列表
-	ticker := time.NewTicker(time.Duration(h.Interval))
+	ticker := time.NewTicker(time.Duration(ipf.Interval))
 	go func() {
 		for range ticker.C {
-			h.logger.Debug("Start updating IP lists")
-			_ = h.updateLists()
-			h.logger.Debug("Finish updating IP lists")
+			ipf.logger.Debug("Start updating IP lists")
+			_ = ipf.updateLists()
+			ipf.logger.Debug("Finish updating IP lists")
 		}
 	}()
 
@@ -75,15 +78,15 @@ func (h *IPFilter) Provision(ctx caddy.Context) error {
 }
 
 // Validate实现了caddy.Validator
-func (h *IPFilter) Validate() error {
-	if h.BlockIPList == "" && h.AllowIPList == "" {
+func (ipf *IPFilter) Validate() error {
+	if ipf.BlockIPList == "" && ipf.AllowIPList == "" {
 		return fmt.Errorf("either block_ip_url or allow_ip_url must be specified")
 	}
 	return nil
 }
 
 // ServeHTTP 实现了 caddyhttp.MiddlewareHandler
-func (h *IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
+func (ipf IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	next caddyhttp.Handler) error {
 	// 获取客户端IP
 	clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -91,7 +94,7 @@ func (h *IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
 		return err
 	}
 
-	h.logger.Info("Client IP", zap.String("ip", clientIP))
+	ipf.logger.Info("Client IP", zap.String("ip", clientIP))
 
 	ip := net.ParseIP(clientIP)
 	if ip == nil {
@@ -100,14 +103,14 @@ func (h *IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	}
 
 	// 检查是否在放行列表中
-	if isIPInList(ip, h.allowedIPs) {
-		h.logger.Info("Access allowed", zap.String("ip", clientIP))
+	if isIPInList(ip, ipf.allowedIPs) {
+		ipf.logger.Info("Access allowed", zap.String("ip", clientIP))
 		return next.ServeHTTP(w, r) // 继续执行下一个处理程序
 	}
 
 	// 检查是否在封禁列表中
-	if isIPInList(ip, h.blockedIPs) {
-		h.logger.Info("Access blocked", zap.String("ip", clientIP))
+	if isIPInList(ip, ipf.blockedIPs) {
+		ipf.logger.Info("Access blocked", zap.String("ip", clientIP))
 		http.Error(w, "Access denied", http.StatusForbidden)
 		return nil
 	}
@@ -117,7 +120,7 @@ func (h *IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
 }
 
 // UnmarshalCaddyfile 实现了 caddyfile.Unmarshaler
-func (h *IPFilter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+func (ipf *IPFilter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
@@ -129,7 +132,7 @@ func (h *IPFilter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err != nil {
 					return err
 				}
-				h.Interval = caddy.Duration(val)
+				ipf.Interval = caddy.Duration(val)
 			case "timeout":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -138,13 +141,13 @@ func (h *IPFilter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err != nil {
 					return err
 				}
-				h.Timeout = caddy.Duration(val)
+				ipf.Timeout = caddy.Duration(val)
 			case "block_ip_list":
-				if !d.Args(&h.BlockIPList) {
+				if !d.Args(&ipf.BlockIPList) {
 					return d.ArgErr()
 				}
 			case "allow_ip_list":
-				if !d.Args(&h.AllowIPList) {
+				if !d.Args(&ipf.AllowIPList) {
 					return d.ArgErr()
 				}
 			default:
@@ -156,63 +159,63 @@ func (h *IPFilter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 }
 
 // updateLists 从API获取IP和CIDR列表
-func (h *IPFilter) updateLists() error {
-	if h.BlockIPList != "" {
-		if isURL(h.BlockIPList) {
+func (ipf *IPFilter) updateLists() error {
+	if ipf.BlockIPList != "" {
+		if isURL(ipf.BlockIPList) {
 			// 如果是URL，则从API获取列表
-			resp, err := http.Get(h.BlockIPList)
+			resp, err := http.Get(ipf.BlockIPList)
 			if err != nil {
-				h.logger.Error("Failed to fetch block list", zap.Error(err))
+				ipf.logger.Error("Failed to fetch block list", zap.Error(err))
 				return err
 			}
 			defer resp.Body.Close()
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				h.logger.Error("Failed to read block list", zap.Error(err))
+				ipf.logger.Error("Failed to read block list", zap.Error(err))
 				return err
 			}
-			if err := json.Unmarshal(body, &h.blockedIPs); err != nil {
-				h.logger.Error("Failed to parse block list", zap.Error(err))
+			if err := json.Unmarshal(body, &ipf.blockedIPs); err != nil {
+				ipf.logger.Error("Failed to parse block list", zap.Error(err))
 				return err
 			}
 		} else {
 			// 不是URL则是文件路径
-			data, err := os.ReadFile(h.BlockIPList)
+			data, err := os.ReadFile(ipf.BlockIPList)
 			if err != nil {
-				h.logger.Error("Failed to read block list", zap.Error(err))
+				ipf.logger.Error("Failed to read block list", zap.Error(err))
 				return err
 			}
 
-			h.blockedIPs = strings.Split(string(data), "\n")
+			ipf.blockedIPs = strings.Split(string(data), "\n")
 		}
 	}
 
-	if h.AllowIPList != "" {
-		if isURL(h.AllowIPList) {
-			resp, err := http.Get(h.AllowIPList)
+	if ipf.AllowIPList != "" {
+		if isURL(ipf.AllowIPList) {
+			resp, err := http.Get(ipf.AllowIPList)
 			if err != nil {
-				h.logger.Error("Failed to fetch allow list", zap.Error(err))
+				ipf.logger.Error("Failed to fetch allow list", zap.Error(err))
 				return err
 			}
 			defer resp.Body.Close()
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				h.logger.Error("Failed to read allow list", zap.Error(err))
+				ipf.logger.Error("Failed to read allow list", zap.Error(err))
 				return err
 			}
-			if err := json.Unmarshal(body, &h.allowedIPs); err != nil {
-				h.logger.Error("Failed to parse allow list", zap.Error(err))
+			if err := json.Unmarshal(body, &ipf.allowedIPs); err != nil {
+				ipf.logger.Error("Failed to parse allow list", zap.Error(err))
 				return err
 			}
 		} else {
 			// 不是URL则是文件路径
-			data, err := os.ReadFile(h.AllowIPList)
+			data, err := os.ReadFile(ipf.AllowIPList)
 			if err != nil {
-				h.logger.Error("Failed to read allow list", zap.Error(err))
+				ipf.logger.Error("Failed to read allow list", zap.Error(err))
 				return err
 			}
 
-			h.allowedIPs = strings.Split(string(data), "\n")
+			ipf.allowedIPs = strings.Split(string(data), "\n")
 		}
 	}
 
@@ -250,4 +253,11 @@ func isURL(str string) bool {
 	regex := `^(http|https)://[^\s/$.?#].[^\s]*$`
 	re := regexp.MustCompile(regex)
 	return re.MatchString(str)
+}
+
+// parseCaddyfile 解析 Caddyfile
+func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+	var ipf IPFilter
+	err := ipf.UnmarshalCaddyfile(h.Dispenser)
+	return ipf, err
 }
