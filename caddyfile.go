@@ -1,7 +1,7 @@
 package caddy_ip_filter
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -33,13 +33,15 @@ func init() {
 }
 
 type IPFilter struct {
-	logger      *zap.Logger
 	allowedIPs  []string
 	blockedIPs  []string
 	Interval    caddy.Duration `json:"interval,omitempty"`      // 更新列表的时间间隔
 	Timeout     caddy.Duration `json:"timeout,omitempty"`       // 请求超时时间
 	BlockIPList string         `json:"block_ip_list,omitempty"` // 封禁列表 可以是ip列表或者CIDR列表
 	AllowIPList string         `json:"allow_ip_list,omitempty"` // 放行列表 可以是ip列表或者CIDR列表
+
+	ctx    caddy.Context
+	logger *zap.Logger
 }
 
 // CaddyModule返回Caddy模块的信息
@@ -52,6 +54,7 @@ func (IPFilter) CaddyModule() caddy.ModuleInfo {
 
 // Provision实现了caddy.Provisioner
 func (ipf *IPFilter) Provision(ctx caddy.Context) error {
+	ipf.ctx = ctx                // 保存上下文
 	ipf.logger = ctx.Logger(ipf) // 获取日志对象
 
 	// 如果未设置更新间隔，则默认为1小时
@@ -91,7 +94,7 @@ func (ipf IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	// 获取客户端IP
 	clientIP := getRealIP(r)
 
-	ipf.logger.Info("Client IP", zap.String("ip", clientIP))
+	ipf.logger.Debug("Client IP", zap.String("ip", clientIP))
 
 	ip := net.ParseIP(clientIP)
 	if ip == nil {
@@ -160,19 +163,10 @@ func (ipf *IPFilter) updateLists() error {
 	if ipf.BlockIPList != "" {
 		if isURL(ipf.BlockIPList) {
 			// 如果是URL，则从API获取列表
-			resp, err := http.Get(ipf.BlockIPList)
+			var err error
+			ipf.blockedIPs, err = ipf.fetch(ipf.BlockIPList)
 			if err != nil {
 				ipf.logger.Error("Failed to fetch block list", zap.Error(err))
-				return err
-			}
-			defer resp.Body.Close()
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				ipf.logger.Error("Failed to read block list", zap.Error(err))
-				return err
-			}
-			if err := json.Unmarshal(body, &ipf.blockedIPs); err != nil {
-				ipf.logger.Error("Failed to parse block list", zap.Error(err))
 				return err
 			}
 		} else {
@@ -189,19 +183,11 @@ func (ipf *IPFilter) updateLists() error {
 
 	if ipf.AllowIPList != "" {
 		if isURL(ipf.AllowIPList) {
-			resp, err := http.Get(ipf.AllowIPList)
+			// 如果是URL，则从API获取列表
+			var err error
+			ipf.allowedIPs, err = ipf.fetch(ipf.AllowIPList)
 			if err != nil {
 				ipf.logger.Error("Failed to fetch allow list", zap.Error(err))
-				return err
-			}
-			defer resp.Body.Close()
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				ipf.logger.Error("Failed to read allow list", zap.Error(err))
-				return err
-			}
-			if err := json.Unmarshal(body, &ipf.allowedIPs); err != nil {
-				ipf.logger.Error("Failed to parse allow list", zap.Error(err))
 				return err
 			}
 		} else {
@@ -217,6 +203,38 @@ func (ipf *IPFilter) updateLists() error {
 	}
 
 	return nil
+}
+
+// getContext 获取上下文
+func (ipf *IPFilter) getContext() (context.Context, context.CancelFunc) {
+	if ipf.Timeout > 0 {
+		return context.WithTimeout(ipf.ctx, time.Duration(ipf.Timeout))
+	}
+	return context.WithCancel(ipf.ctx)
+}
+
+// fetch 从API获取IP和CIDR列表
+func (ipf *IPFilter) fetch(api string) ([]string, error) {
+	ctx, cancel := ipf.getContext()
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return strings.Split(string(body), "\n"), nil
 }
 
 // getRealIP 获取真实IP地址
