@@ -18,15 +18,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// 保证 IPFilter 实现接口
-var (
-	_ caddy.Provisioner           = (*IPFilter)(nil)
-	_ caddy.Validator             = (*IPFilter)(nil)
-	_ caddyhttp.MiddlewareHandler = (*IPFilter)(nil)
-	_ caddyfile.Unmarshaler       = (*IPFilter)(nil)
-)
-
-// init 函数用于注册 Caddy 插件
+// init Register the module
 func init() {
 	caddy.RegisterModule(IPFilter{})
 	httpcaddyfile.RegisterHandlerDirective("ip_filter", parseCaddyfile)
@@ -35,16 +27,16 @@ func init() {
 type IPFilter struct {
 	allowedIPs  []string
 	blockedIPs  []string
-	Interval    caddy.Duration `json:"interval,omitempty"`      // 更新列表的时间间隔
-	Timeout     caddy.Duration `json:"timeout,omitempty"`       // 请求超时时间
-	BlockIPList string         `json:"block_ip_list,omitempty"` // 封禁列表 可以是ip列表或者CIDR列表
-	AllowIPList string         `json:"allow_ip_list,omitempty"` // 放行列表 可以是ip列表或者CIDR列表
+	Interval    caddy.Duration `json:"interval,omitempty"`
+	Timeout     caddy.Duration `json:"timeout,omitempty"`
+	BlockIPList string         `json:"block_ip_list,omitempty"`
+	AllowIPList string         `json:"allow_ip_list,omitempty"`
 
 	ctx    caddy.Context
 	logger *zap.Logger
 }
 
-// CaddyModule返回Caddy模块的信息
+// CaddyModule Return information of Caddy module
 func (IPFilter) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.ip_filter",
@@ -52,22 +44,19 @@ func (IPFilter) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-// Provision实现了caddy.Provisioner
+// Provision Implemented caddy.Provisioner
 func (ipf *IPFilter) Provision(ctx caddy.Context) error {
-	ipf.ctx = ctx                // 保存上下文
-	ipf.logger = ctx.Logger(ipf) // 获取日志对象
+	ipf.ctx = ctx
+	ipf.logger = ctx.Logger(ipf)
 
-	// 如果未设置更新间隔，则默认为1小时
 	if ipf.Interval == 0 {
 		ipf.Interval = caddy.Duration(time.Hour)
 	}
 
-	// 更新列表
 	if err := ipf.updateLists(); err != nil {
 		return fmt.Errorf("updating IP lists: %v", err)
 	}
 
-	// 启动定时器，定时更新列表
 	ticker := time.NewTicker(time.Duration(ipf.Interval))
 	go func() {
 		for range ticker.C {
@@ -80,7 +69,7 @@ func (ipf *IPFilter) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-// Validate实现了caddy.Validator
+// Validate Implemented caddy.Validator
 func (ipf *IPFilter) Validate() error {
 	if ipf.BlockIPList == "" && ipf.AllowIPList == "" {
 		return fmt.Errorf("either block_ip_url or allow_ip_url must be specified")
@@ -88,10 +77,10 @@ func (ipf *IPFilter) Validate() error {
 	return nil
 }
 
-// ServeHTTP 实现了 caddyhttp.MiddlewareHandler
+// ServeHTTP Implemented caddyhttp.MiddlewareHandler
 func (ipf IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	next caddyhttp.Handler) error {
-	// 获取客户端IP
+	// Get client IP address
 	clientIP := getRealIP(r)
 
 	ipf.logger.Debug("Client IP", zap.String("ip", clientIP))
@@ -102,24 +91,24 @@ func (ipf IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
 		return nil
 	}
 
-	// 检查是否在放行列表中
+	// Check if it is on the allow list
 	if isIPInList(ip, ipf.allowedIPs) {
 		ipf.logger.Info("Access allowed", zap.String("ip", clientIP))
-		return next.ServeHTTP(w, r) // 继续执行下一个处理程序
+		return next.ServeHTTP(w, r) // Continue to next process
 	}
 
-	// 检查是否在封禁列表中
+	// Check if it is on the block list
 	if isIPInList(ip, ipf.blockedIPs) {
 		ipf.logger.Info("Access blocked", zap.String("ip", clientIP))
 		http.Error(w, "Access denied", http.StatusForbidden)
 		return nil
 	}
 
-	// 默认处理
+	// Default process
 	return next.ServeHTTP(w, r)
 }
 
-// UnmarshalCaddyfile 实现了 caddyfile.Unmarshaler
+// UnmarshalCaddyfile Implemented caddyfile.Unmarshaler
 func (ipf *IPFilter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
@@ -158,11 +147,11 @@ func (ipf *IPFilter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	return nil
 }
 
-// updateLists 从API获取IP和CIDR列表
+// updateLists Retrieve IP and CIDR lists from API
 func (ipf *IPFilter) updateLists() error {
 	if ipf.BlockIPList != "" {
 		if isURL(ipf.BlockIPList) {
-			// 如果是URL，则从API获取列表
+			// If it is a URL, retrieve the list from the API
 			var err error
 			ipf.blockedIPs, err = ipf.fetch(ipf.BlockIPList)
 			if err != nil {
@@ -170,7 +159,7 @@ func (ipf *IPFilter) updateLists() error {
 				return err
 			}
 		} else {
-			// 不是URL则是文件路径
+			// If it's not a URL, it's a file path
 			data, err := os.ReadFile(ipf.BlockIPList)
 			if err != nil {
 				ipf.logger.Error("Failed to read block list", zap.Error(err))
@@ -183,7 +172,7 @@ func (ipf *IPFilter) updateLists() error {
 
 	if ipf.AllowIPList != "" {
 		if isURL(ipf.AllowIPList) {
-			// 如果是URL，则从API获取列表
+			// If it is a URL, retrieve the list from the API
 			var err error
 			ipf.allowedIPs, err = ipf.fetch(ipf.AllowIPList)
 			if err != nil {
@@ -191,7 +180,7 @@ func (ipf *IPFilter) updateLists() error {
 				return err
 			}
 		} else {
-			// 不是URL则是文件路径
+			// If it's not a URL, it's a file path
 			data, err := os.ReadFile(ipf.AllowIPList)
 			if err != nil {
 				ipf.logger.Error("Failed to read allow list", zap.Error(err))
@@ -205,7 +194,7 @@ func (ipf *IPFilter) updateLists() error {
 	return nil
 }
 
-// getContext 获取上下文
+// getContext
 func (ipf *IPFilter) getContext() (context.Context, context.CancelFunc) {
 	if ipf.Timeout > 0 {
 		return context.WithTimeout(ipf.ctx, time.Duration(ipf.Timeout))
@@ -213,7 +202,7 @@ func (ipf *IPFilter) getContext() (context.Context, context.CancelFunc) {
 	return context.WithCancel(ipf.ctx)
 }
 
-// fetch 从API获取IP和CIDR列表
+// fetch Retrieve IP and CIDR lists from API
 func (ipf *IPFilter) fetch(api string) ([]string, error) {
 	ctx, cancel := ipf.getContext()
 	defer cancel()
@@ -237,23 +226,23 @@ func (ipf *IPFilter) fetch(api string) ([]string, error) {
 	return strings.Split(string(body), "\n"), nil
 }
 
-// getRealIP 获取真实IP地址
+// getRealIP get real IP address
 func getRealIP(r *http.Request) string {
-	// 检查 X-Forwarded-For 头
+	// Check X-Forwarded-For
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// X-Forwarded-For 可以包含多个 IP 地址，逗号分隔
+		// X-Forwarded-For can multiple IP addresses, separated by commas
 		ips := strings.Split(xff, ",")
 		if len(ips) > 0 {
 			return strings.TrimSpace(ips[0])
 		}
 	}
 
-	// 检查 X-Real-IP 头
+	// Check X-Real-IP
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return xri
 	}
 
-	// 默认返回 RemoteAddr
+	// return to RemoteAddr
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -261,30 +250,28 @@ func getRealIP(r *http.Request) string {
 	return ip
 }
 
-// isURL 检查字符串是否为URL
+// isURL Check if the string is a URL
 func isURL(str string) bool {
-	// 定义一个简单的正则表达式来匹配 URL
-	// 这个正则表达式并不是非常严格，可以根据需要进行调整
 	regex := `^(http|https)://[^\s/$.?#].[^\s]*$`
 	re := regexp.MustCompile(regex)
 	return re.MatchString(str)
 }
 
-// isIPInList 检查IP是否在列表中
+// isIPInList Check if the IP is in the list
 func isIPInList(ip net.IP, list []string) bool {
 	for _, entry := range list {
-		entry = strings.TrimSpace(entry) // 去除空格
+		entry = strings.TrimSpace(entry) // Remove spaces
 
-		// 先尝试解析为IP
+		// Try parse to IP
 		if net.ParseIP(entry) != nil {
 			if ip.Equal(net.ParseIP(entry)) {
 				return true
 			}
 		} else {
-			// 尝试解析为CIDR
+			// Try parse to CIDR
 			_, network, err := net.ParseCIDR(entry)
 			if err != nil {
-				continue // 如果解析失败，跳过
+				continue
 			}
 			if network.Contains(ip) {
 				return true
@@ -294,9 +281,17 @@ func isIPInList(ip net.IP, list []string) bool {
 	return false
 }
 
-// parseCaddyfile 解析 Caddyfile
+// parseCaddyfile parsing Caddyfile
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var ipf IPFilter
 	err := ipf.UnmarshalCaddyfile(h.Dispenser)
 	return ipf, err
 }
+
+// Ensure the implementation of IPFilter interface
+var (
+	_ caddy.Provisioner           = (*IPFilter)(nil)
+	_ caddy.Validator             = (*IPFilter)(nil)
+	_ caddyhttp.MiddlewareHandler = (*IPFilter)(nil)
+	_ caddyfile.Unmarshaler       = (*IPFilter)(nil)
+)
