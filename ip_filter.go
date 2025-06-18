@@ -78,10 +78,17 @@ func (ipf *IPFilter) Provision(ctx caddy.Context) error {
 
 	ticker := time.NewTicker(time.Duration(ipf.Interval))
 	go func() {
-		for range ticker.C {
-			ipf.logger.Debug("Start updating IP lists")
-			_ = ipf.updateLists()
-			ipf.logger.Debug("Finish updating IP lists")
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ipf.logger.Debug("Start updating IP lists")
+				_ = ipf.updateLists()
+				ipf.logger.Debug("Finish updating IP lists")
+			case <-ctx.Done():
+				ipf.logger.Debug("IPFilter ticker exit")
+				return
+			}
 		}
 	}()
 
@@ -112,7 +119,7 @@ func (ipf IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
 
 	// Check if it is on the block list
 	if isIPInList(ip, ipf.blockedIPs) {
-		ipf.logger.Info("Access blocked", zap.String("ip", clientIP))
+		ipf.logger.Warn("Access blocked", zap.String("ip", clientIP))
 		http.Error(w, "Access denied", http.StatusForbidden)
 		return nil
 	}
