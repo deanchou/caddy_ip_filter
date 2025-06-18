@@ -18,6 +18,8 @@ import (
 	"go.uber.org/zap"
 )
 
+var urlRegexp = regexp.MustCompile(`^https?://`) // Regular expression to check if the string is a URL
+
 // init Register the module
 func init() {
 	caddy.RegisterModule(IPFilter{})
@@ -34,6 +36,23 @@ type IPFilter struct {
 
 	ctx    caddy.Context
 	logger *zap.Logger
+}
+
+// cleanIPList removes duplicates and empty entries from the IP list
+func cleanIPList(list []string) []string {
+	seen := make(map[string]struct{})
+	var result []string
+	for _, ip := range list {
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			continue
+		}
+		if _, ok := seen[ip]; !ok {
+			seen[ip] = struct{}{}
+			result = append(result, ip)
+		}
+	}
+	return result
 }
 
 // CaddyModule Return information of Caddy module
@@ -91,17 +110,17 @@ func (ipf IPFilter) ServeHTTP(w http.ResponseWriter, r *http.Request,
 		return nil
 	}
 
-	// Check if it is on the allow list
-	if isIPInList(ip, ipf.allowedIPs) {
-		ipf.logger.Info("Access allowed", zap.String("ip", clientIP))
-		return next.ServeHTTP(w, r) // Continue to next process
-	}
-
 	// Check if it is on the block list
 	if isIPInList(ip, ipf.blockedIPs) {
 		ipf.logger.Info("Access blocked", zap.String("ip", clientIP))
 		http.Error(w, "Access denied", http.StatusForbidden)
 		return nil
+	}
+
+	// Check if it is on the allow list
+	if isIPInList(ip, ipf.allowedIPs) {
+		ipf.logger.Info("Access allowed", zap.String("ip", clientIP))
+		return next.ServeHTTP(w, r) // Continue to next process
 	}
 
 	// Default process
@@ -168,6 +187,7 @@ func (ipf *IPFilter) updateLists() error {
 
 			ipf.blockedIPs = strings.Split(string(data), "\n")
 		}
+		ipf.blockedIPs = cleanIPList(ipf.blockedIPs)
 	}
 
 	if ipf.AllowIPList != "" {
@@ -189,6 +209,7 @@ func (ipf *IPFilter) updateLists() error {
 
 			ipf.allowedIPs = strings.Split(string(data), "\n")
 		}
+		ipf.allowedIPs = cleanIPList(ipf.allowedIPs)
 	}
 
 	return nil
@@ -252,9 +273,9 @@ func getRealIP(r *http.Request) string {
 
 // isURL Check if the string is a URL
 func isURL(str string) bool {
-	regex := `^(http|https)://[^\s/$.?#].[^\s]*$`
-	re := regexp.MustCompile(regex)
-	return re.MatchString(str)
+	// regex := `^(http|https)://[^\s/$.?#].[^\s]*$`
+	// re := regexp.MustCompile(regex)
+	return urlRegexp.MatchString(str)
 }
 
 // isIPInList Check if the IP is in the list
